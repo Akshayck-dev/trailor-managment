@@ -1,0 +1,42 @@
+{
+  "name": "croma-tailors",
+  "productName": "CROMA Tailors",
+  "version": "1.0.0",
+  "description": "Premium Tailoring Business Management Suite",
+  "main": "main.js",
+  "author": "CRMA Tailors",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder"
+  },
+  "dependencies": {
+    "sqlite3": "^5.1.7"
+  },
+  "devDependencies": {
+    "electron": "^30.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.croma.tailors",
+    "productName": "CROMA Tailors",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "**/*",
+      "!KEY_GENERATOR.html",
+      "!electron_data/**/*",
+      "!dist/**/*"
+    ],
+    "win": {
+      "target": "nsis",
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  }
+}

@@ -1,0 +1,8 @@
+node_modules/
+dist/
+database.db
+*.db
+electron_data/
+crash_report.txt
+.DS_Store
+Thumbs.db
