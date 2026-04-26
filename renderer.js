@@ -926,8 +926,12 @@ async function saveOrderFinal() {
         document.getElementById('successMsg').innerText = `Order #${document.getElementById('billNumber').value} has been ${editingOrderId ? 'updated' : 'added'} successfully.`;
 
         // Show Success Modal
-        const hasShirt = orderItems.some(i => i.type === 'Shirt');
-        const hasPant = orderItems.some(i => i.type === 'Pant');
+        console.log("Detecting items for success modal. Current items:", orderItems);
+        const hasShirt = orderItems.some(i => i.type.toLowerCase().includes('shirt'));
+        const hasPant = orderItems.some(i => i.type.toLowerCase().includes('pant'));
+        
+        console.log("Has Shirt:", hasShirt, "Has Pant:", hasPant);
+        
         document.getElementById('success-print-shirt').style.display = hasShirt ? 'flex' : 'none';
         document.getElementById('success-print-pant').style.display = hasPant ? 'flex' : 'none';
         document.getElementById('success-print-both').style.display = (hasShirt && hasPant) ? 'flex' : 'none';
