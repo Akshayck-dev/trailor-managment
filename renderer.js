@@ -926,15 +926,21 @@ async function saveOrderFinal() {
         document.getElementById('successMsg').innerText = `Order #${document.getElementById('billNumber').value} has been ${editingOrderId ? 'updated' : 'added'} successfully.`;
 
         // Show Success Modal
-        console.log("Detecting items for success modal. Current items:", orderItems);
-        const hasShirt = orderItems.some(i => i.type.toLowerCase().includes('shirt'));
-        const hasPant = orderItems.some(i => i.type.toLowerCase().includes('pant'));
+        const measurements = collectMeasurements();
         
-        console.log("Has Shirt:", hasShirt, "Has Pant:", hasPant);
+        // Detection Logic: Check if items are in the order list OR if measurements are filled
+        const hasShirtItem = orderItems.some(i => i.type.toLowerCase().includes('shirt'));
+        const hasPantItem = orderItems.some(i => i.type.toLowerCase().includes('pant'));
         
-        document.getElementById('success-print-shirt').style.display = hasShirt ? 'flex' : 'none';
-        document.getElementById('success-print-pant').style.display = hasPant ? 'flex' : 'none';
-        document.getElementById('success-print-both').style.display = (hasShirt && hasPant) ? 'flex' : 'none';
+        const hasShirtMeas = !!(measurements.length || measurements.chest || measurements.shoulder);
+        const hasPantMeas = !!(measurements.waist || measurements.height || measurements.thigh);
+
+        const showShirt = hasShirtItem || hasShirtMeas;
+        const showPant = hasPantItem || hasPantMeas;
+
+        document.getElementById('success-print-shirt').style.display = showShirt ? 'flex' : 'none';
+        document.getElementById('success-print-pant').style.display = showPant ? 'flex' : 'none';
+        document.getElementById('success-print-both').style.display = (showShirt && showPant) ? 'flex' : 'none';
         
         document.getElementById('successModal').classList.remove('hidden');
         backupDB();
@@ -1357,9 +1363,19 @@ function renderHistoryRows(rows) {
                         <button class="btn-action btn-edit" title="Edit Order" onclick="editOrder(${r.id})">
                             <span class="material-symbols-outlined" style="font-size: 16px;">edit</span>
                         </button>
-                        <button class="btn-action btn-bill" title="Print Bill" onclick="printBillFromData('${r.bill_number}')">
-                            <span class="material-symbols-outlined" style="font-size: 16px;">receipt_long</span>
-                        </button>
+                        <div class="dropdown">
+                            <button class="btn-action btn-bill" title="Print Bill" onclick="printBillFromData('${r.bill_number}', 'both')">
+                                <span class="material-symbols-outlined" style="font-size: 16px;">receipt_long</span>
+                                ${ (r.has_shirt > 0 && r.has_pant > 0) ? '▾' : '' }
+                            </button>
+                            ${ (r.has_shirt > 0 && r.has_pant > 0) ? `
+                            <div class="dropdown-content">
+                                <button onclick="printBillFromData('${r.bill_number}', 'both')">🧾 Full Bill</button>
+                                <button onclick="printBillFromData('${r.bill_number}', 'shirt')">👕 Shirt Bill</button>
+                                <button onclick="printBillFromData('${r.bill_number}', 'pant')">👖 Pant Bill</button>
+                            </div>
+                            ` : '' }
+                        </div>
                         ${(r.has_shirt > 0 || r.has_pant > 0)
                 ? `
                             <div class="dropdown">
@@ -1860,12 +1876,24 @@ function printBillA5(orderRef) {
 }
 
 // --- PROFESSIONAL PRINTING ---
-function printBillFromData(billNumber) {
+function printBillFromData(billNumber, filterType = 'both') {
     db.get("SELECT o.*, c.name as customer_name, c.phone as customer_phone FROM orders o JOIN customers c ON o.customer_id = c.id WHERE o.bill_number = ?", [billNumber], (err, order) => {
         if (err || !order) return showStatus("Bill not found", "❌");
 
         db.all("SELECT * FROM order_items WHERE order_id = ?", [order.id], (err, items) => {
             if (err) return;
+
+            // Apply filter if needed
+            let filteredItems = items;
+            if (filterType === 'shirt') {
+                filteredItems = items.filter(i => i.item_type.toLowerCase().includes('shirt'));
+            } else if (filterType === 'pant') {
+                filteredItems = items.filter(i => i.item_type.toLowerCase().includes('pant'));
+            }
+
+            if (filteredItems.length === 0) {
+                return showStatus(`No ${filterType} items found in this bill.`, "⚠️");
+            }
 
             const htmlContent = `
                 <html>
@@ -1941,7 +1969,7 @@ function printBillFromData(billNumber) {
 
                         <div class="info-section">
                             <div class="info-column">
-                                <div class="info-row"><span class="info-label">Bill No:</span> <span class="info-value">#${order.bill_number}</span></div>
+                                <div class="info-row"><span class="info-label">Bill No:</span> <span class="info-value">#${order.bill_number} ${filterType !== 'both' ? `(${filterType.toUpperCase()})` : ''}</span></div>
                                 <div class="info-row"><span class="info-label">Customer:</span> <span class="info-value">${order.customer_name}</span></div>
                             </div>
                             <div class="info-column" style="text-align: right; display: flex; flex-direction: column; align-items: flex-end;">
@@ -1960,7 +1988,7 @@ function printBillFromData(billNumber) {
                                 </tr>
                             </thead>
                             <tbody>
-                                ${items.map(i => `
+                                ${filteredItems.map(i => `
                                     <tr>
                                         <td class="col-item" style="font-weight: 700;">${i.item_type}</td>
                                         <td class="col-qty">${i.quantity}</td>
@@ -1974,17 +2002,25 @@ function printBillFromData(billNumber) {
                         <div class="summary-wrapper">
                             <table class="summary-table">
                                 <tr>
-                                    <td class="summary-label">Total Amount:</td>
-                                    <td class="summary-value">₹ ${order.total.toLocaleString('en-IN')}</td>
+                                    <td class="summary-label">Subtotal</td>
+                                    <td class="summary-value">₹ ${filteredItems.reduce((s, i) => s + i.amount, 0).toLocaleString('en-IN')}</td>
                                 </tr>
+                                ${filterType === 'both' ? `
                                 <tr>
-                                    <td class="summary-label">Advance Paid:</td>
+                                    <td class="summary-label">Advance Paid</td>
                                     <td class="summary-value">₹ ${order.advance.toLocaleString('en-IN')}</td>
                                 </tr>
                                 <tr class="balance-row">
-                                    <td class="summary-label">Balance Due:</td>
-                                    <td class="summary-value">₹ ${(order.total - order.advance).toLocaleString('en-IN')}</td>
+                                    <td class="summary-label" style="color: #ef4444;">Balance Due</td>
+                                    <td class="summary-value" style="color: #ef4444;">₹ ${(filteredItems.reduce((s, i) => s + i.amount, 0) - order.advance).toLocaleString('en-IN')}</td>
                                 </tr>
+                                ` : `
+                                <tr>
+                                    <td colspan="2" style="font-size: 10px; color: #666; font-style: italic; text-align: right; padding-top: 10px;">
+                                        * This is a partial bill for ${filterType}.<br>Advance & Balance shown on full bill.
+                                    </td>
+                                </tr>
+                                `}
                             </table>
                         </div>
 
