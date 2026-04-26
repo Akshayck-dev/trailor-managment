@@ -797,6 +797,21 @@
                 </div>
         </div>
     </div>
+    <div id="reminderModal" class="modal-overlay hidden" style="z-index: 100002; background: rgba(0,0,0,0.6); backdrop-filter: blur(10px);">
+        <div class="modal-content fade-in" style="max-width: 400px; padding: 30px; border-radius: 24px; background: white; text-align: center;">
+            <div style="width: 70px; height: 70px; background: #ebf5ff; color: #3b82f6; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 20px; font-size: 36px;">
+                <span class="material-symbols-outlined" style="font-size: 40px;">notifications_active</span>
+            </div>
+            <h2 style="margin: 0; font-size: 22px; font-weight: 800; color: #1e293b;">Tomorrow's Deliveries</h2>
+            <p style="margin: 10px 0 20px; color: #64748b; font-size: 14px;">Here are the customers you need to prepare for tomorrow:</p>
+            
+            <div id="reminderCustomerList" style="text-align: left; background: #f8fafc; border-radius: 16px; padding: 15px; margin-bottom: 25px; max-height: 250px; overflow-y: auto; border: 1px solid #e2e8f0;">
+                <!-- Names will be injected here -->
+            </div>
+
+            <button onclick="document.getElementById('reminderModal').classList.add('hidden')" class="primary" style="width: 100%; height: 50px; border-radius: 12px; font-weight: 800; background: #3b82f6; color: white; border: none; cursor: pointer; box-shadow: 0 4px 15px rgba(59, 130, 246, 0.4);">Got it, thanks!</button>
+        </div>
+    </div>
     <script src="renderer.js"></script>
 </body>
 </html>

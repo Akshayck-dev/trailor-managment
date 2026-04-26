@@ -2840,3 +2840,48 @@ document.addEventListener('click', (e) => {
         console.log("Target ID:", e.target.id, "Z-Index:", styles.zIndex, "Pointer-Events:", styles.pointerEvents);
     }
 }, true); // Use capture phase
+// --- DAILY REMINDER AT 8 PM ---
+let lastReminderDate = null;
+
+function checkDailyReminder() {
+    const now = new Date();
+    const currentHour = now.getHours();
+    const currentDate = now.toDateString();
+
+    // Trigger at 8 PM (20:00) if not already shown today
+    if (currentHour === 20 && lastReminderDate !== currentDate) {
+        lastReminderDate = currentDate;
+        showTomorrowReminders();
+    }
+}
+
+function showTomorrowReminders() {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const tomorrowStr = tomorrow.toISOString().split('T')[0];
+
+    db.all(`
+        SELECT DISTINCT c.name FROM orders o 
+        JOIN customers c ON o.customer_id = c.id 
+        WHERE o.delivery_date = ? AND (o.status IS NULL OR o.status != 'DELIVERED')
+    `, [tomorrowStr], (err, rows) => {
+        if (err || !rows || rows.length === 0) return;
+
+        const listEl = document.getElementById('reminderCustomerList');
+        if (!listEl) return;
+
+        listEl.innerHTML = rows.map((r, index) => `
+            <div style="display: flex; align-items: center; gap: 12px; padding: 10px 0; ${index < rows.length - 1 ? 'border-bottom: 1px solid #f1f5f9;' : ''}">
+                <div style="width: 8px; height: 8px; background: #3b82f6; border-radius: 50%;"></div>
+                <div style="font-weight: 700; color: #1e293b; font-size: 15px;">${r.name}</div>
+            </div>
+        `).join('');
+
+        document.getElementById('reminderModal').classList.remove('hidden');
+    });
+}
+
+// Check every minute
+setInterval(checkDailyReminder, 60000);
+// Also check on startup
+setTimeout(checkDailyReminder, 5000);
