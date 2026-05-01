@@ -11,6 +11,9 @@
 </head>
 <body>
     <div class="app-container">
+        <!-- CALENDAR TOOLTIP -->
+        <div id="calendarTooltip" class="calendar-tooltip hidden"></div>
+        
         <!-- SIDEBAR -->
         <aside>
             <div class="sidebar-header">
@@ -34,7 +37,7 @@
                 <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 15px; margin-bottom: 25px;">
                     <div class="stat-card">
                         <h3>Total Revenue</h3>
-                        <div class="stat-val" id="stat-total-revenue" style="color: #10b981;">₹ 0</div>
+                        <div class="stat-val" id="stat-total-revenue" style="color: #10b981;">&#8377; 0</div>
                     </div>
                     <div class="stat-card">
                         <h3>Total Orders</h3>
@@ -104,13 +107,7 @@
                     <button class="secondary" onclick="exportCSV('orders')" style="height: 32px; padding: 0 15px; font-size: 12px; border: 1.5px solid #000;">Export Orders</button>
                 </div>
 
-                <div id="overdueAlerts" style="margin-top: 24px;">
-                    <div style="display: flex; align-items: center; gap: 10px;">
-                        <span class="material-symbols-outlined" style="color: #dc2626; font-size: 24px; font-variation-settings: 'FILL' 1;">warning</span>
-                        <h3 style="margin: 0; font-size: 16px; font-weight: 800; color: #991b1b; text-transform: uppercase; letter-spacing: 0.5px;">Attention: Overdue Orders</h3>
-                    </div>
-                    <!-- Overdue alerts will be injected here -->
-                </div>
+
 
 
             </section>
@@ -219,7 +216,7 @@
                         </div>
                         <div class="field" style="max-width: 150px; text-align: right;">
                             <label>Balance Amount</label>
-                            <div id="balanceLabel" style="font-size: 20px; font-weight: 700; color: var(--danger);">₹ 0</div>
+                            <div id="balanceLabel" style="font-size: 20px; font-weight: 700; color: var(--danger);">&#8377; 0</div>
                         </div>
                     </div>
                    <!-- MEASUREMENT SECTION (Dual Grid) -->
@@ -461,14 +458,43 @@
                     
                     <div id="backup-restore-container">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                            <h4 style="margin:0;">Available Backups</h4>
-                            <button class="secondary" onclick="loadBackupList()" style="height:32px; padding: 0 12px; font-size: 12px;">🔄 Refresh List</button>
+                            <h4 style="margin:0;">Available Backups (Local)</h4>
+                            <div style="display: flex; gap: 8px;">
+                                <button class="secondary" onclick="openBackupFolder()" style="height:32px; padding: 0 12px; font-size: 12px;">📂 Open Folder</button>
+                                <button class="secondary" onclick="loadBackupList()" style="height:32px; padding: 0 12px; font-size: 12px;">🔄 Refresh List</button>
+                            </div>
                         </div>
                         <div id="backupList" class="backup-list">
                             <!-- Injected by JS -->
                             <div style="text-align: center; padding: 20px; color: var(--text-secondary);">Scanning for backups...</div>
                         </div>
                     </div>
+                </div>
+
+                <div class="card" style="margin-top: 20px; background: #f0f7ff; border: 1px solid #bae6fd;">
+                    <h3 style="color: #0369a1; display: flex; align-items: center; gap: 8px;">
+                        <span class="material-symbols-outlined">cloud_sync</span>
+                        Online Cloud Backup
+                    </h3>
+                    <p style="font-size: 13px; line-height: 1.6; color: #0c4a6e; margin-bottom: 15px;">
+                        To keep your data safe online, follow these simple steps:
+                        <br>1. Click <b>'Open Folder'</b> above to find your backup files.
+                        <br>2. Upload or sync the <b>TailorBackup</b> folder to <b>Google Drive, OneDrive, or Dropbox</b>.
+                        <br>3. This ensures your customer data is safe even if your computer is lost or damaged.
+                    </p>
+                    <button class="secondary" onclick="uploadToCloudManual()" style="width: 100%; border: 1.5px solid #0369a1; color: #0369a1; font-weight: 700; font-size: 12px;">🌐 Open Folder & Google Drive for Upload</button>
+                </div>
+
+                <div class="card" style="margin-top: 20px; background: #f0fdf4; border: 1px solid #bbf7d0;">
+                    <h3 style="color: #15803d; display: flex; align-items: center; gap: 8px;">
+                        <span class="material-symbols-outlined">table_view</span>
+                        Excel / CSV Export
+                    </h3>
+                    <p style="font-size: 13px; line-height: 1.6; color: #166534; margin-bottom: 15px;">
+                        Need your data in <b>Excel</b> or <b>Google Sheets</b>? 
+                        This export includes all <b>Customer Details</b>, their latest <b>Measurements</b>, and a summary of their <b>Order History</b>.
+                    </p>
+                    <button class="primary" onclick="exportFullData()" style="background: #22c55e; border: none; font-size: 13px; width: 100%;">📥 Download Full Data (Excel/CSV)</button>
                 </div>
 
                 <div class="card" style="margin-top: 20px; border-left: 4px solid var(--danger);">
@@ -517,9 +543,9 @@
             <tbody id="p-items"></tbody>
         </table>
         <hr>
-        <p>Total: ₹ <span id="p-total"></span></p>
-        <p>Advance: ₹ <span id="p-adv"></span></p>
-        <p>Balance: ₹ <span id="p-bal"></span></p>
+        <p>Total: &#8377; <span id="p-total"></span></p>
+        <p>Advance: &#8377; <span id="p-adv"></span></p>
+        <p>Balance: &#8377; <span id="p-bal"></span></p>
         <p>Delivery: <span id="p-del"></span></p>
     </div>
 
@@ -576,11 +602,11 @@
                     </div>
                     <div style="background: #fff; padding: 12px; border: 1px solid var(--border); border-radius: 8px; text-align: center;">
                         <div style="font-size: 10px; font-weight: 700; color: #64748b; text-transform: uppercase;">Total Spent</div>
-                        <div id="hist-total-spent" style="font-size: 20px; font-weight: 900; color: #000;">₹ 0</div>
+                        <div id="hist-total-spent" style="font-size: 20px; font-weight: 900; color: #000;">&#8377; 0</div>
                     </div>
                     <div style="background: #fff; padding: 12px; border: 1px solid var(--border); border-radius: 8px; text-align: center;">
                         <div style="font-size: 10px; font-weight: 700; color: #64748b; text-transform: uppercase;">Pending Balance</div>
-                        <div id="hist-total-balance" style="font-size: 20px; font-weight: 900; color: #ef4444;">₹ 0</div>
+                        <div id="hist-total-balance" style="font-size: 20px; font-weight: 900; color: #ef4444;">&#8377; 0</div>
                     </div>
                 </div>
 
@@ -756,7 +782,7 @@
             <div class="modal-body">
                 <p id="paymentBillInfo" style="font-weight: 800; margin-bottom: 15px; color: #6366f1;"></p>
                 <div class="field">
-                    <label>Amount to Pay (Max ₹ <span id="maxPayAmount">0</span>)</label>
+                    <label>Amount to Pay (Max &#8377; <span id="maxPayAmount">0</span>)</label>
                     <input type="number" id="payAmountInput" placeholder="Enter amount">
                 </div>
                 <div class="field">

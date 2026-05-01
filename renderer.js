@@ -1,4 +1,4 @@
-const { ipcRenderer } = require('electron');
+const { ipcRenderer, shell } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -42,6 +42,16 @@ let pendingPrintData = null; // Store data for the success modal to print
 
 // --- INITIALIZATION ---
 document.addEventListener('DOMContentLoaded', async () => {
+    // SILENCE LOGS IN PRODUCTION
+    const isPackaged = await ipcRenderer.invoke('is-packaged');
+    if (isPackaged) {
+        console.log = () => {};
+        console.debug = () => {};
+        console.info = () => {};
+        console.warn = () => {};
+        console.error = () => {}; // Silence errors too for stable feel, or keep them? User said "disable console log".
+    }
+
     console.log("DOM Loaded - Initializing App");
 
     // 1. SECURITY CHECK
@@ -327,6 +337,7 @@ window.changeMonth = function(offset) {
 async function renderCalendar() {
     const grid = document.getElementById('calendarGrid');
     const title = document.getElementById('currentMonthYear');
+    const tooltip = document.getElementById('calendarTooltip');
     if (!grid || !title) return;
 
     grid.innerHTML = '';
@@ -339,53 +350,134 @@ async function renderCalendar() {
     const firstDay = new Date(year, month, 1).getDay();
     const daysInMonth = new Date(year, month + 1, 0).getDate();
 
-    // Empty cells for padding
+    // Empty cells
     for (let i = 0; i < firstDay; i++) {
         const div = document.createElement('div');
-        div.style.height = '100px';
+        div.style.height = '120px';
         grid.appendChild(div);
     }
 
-    // Days with orders
     const startOfMonth = `${year}-${String(month + 1).padStart(2, '0')}-01`;
     const endOfMonth = `${year}-${String(month + 1).padStart(2, '0')}-${daysInMonth}`;
 
-    const sql = `SELECT delivery_date, COUNT(*) as count FROM orders WHERE delivery_date BETWEEN ? AND ? GROUP BY delivery_date`;
+    // Query to get all orders and items for the month
+    const sql = `
+        SELECT 
+            o.delivery_date, 
+            c.name as customer_name,
+            oi.item_type,
+            oi.quantity
+        FROM orders o
+        JOIN customers c ON o.customer_id = c.id
+        JOIN order_items oi ON o.id = oi.order_id
+        WHERE o.delivery_date BETWEEN ? AND ?
+    `;
+
     db.all(sql, [startOfMonth, endOfMonth], (err, rows) => {
-        const orderCounts = {};
-        if (!err && rows) rows.forEach(r => orderCounts[r.delivery_date] = r.count);
+        const calendarData = {};
+        if (!err && rows) {
+            rows.forEach(r => {
+                const date = r.delivery_date;
+                if (!calendarData[date]) {
+                    calendarData[date] = { total_shirts: 0, total_pants: 0, customers: {} };
+                }
+                const dayData = calendarData[date];
+                const type = r.item_type.toLowerCase();
+                const qty = r.quantity || 0;
+
+                if (type.includes('shirt')) dayData.total_shirts += qty;
+                else if (type.includes('pant')) dayData.total_pants += qty;
+
+                if (!dayData.customers[r.customer_name]) {
+                    dayData.customers[r.customer_name] = { s: 0, p: 0 };
+                }
+                if (type.includes('shirt')) dayData.customers[r.customer_name].s += qty;
+                else if (type.includes('pant')) dayData.customers[r.customer_name].p += qty;
+            });
+        }
 
         for (let d = 1; d <= daysInMonth; d++) {
             const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
             const isToday = new Date().toISOString().split('T')[0] === dateStr;
-            const count = orderCounts[dateStr] || 0;
+            const data = calendarData[dateStr];
 
             const dayDiv = document.createElement('div');
             dayDiv.className = 'calendar-day';
             dayDiv.style.cssText = `
-                height: 100px;
+                height: 120px;
                 border: 1px solid #f1f5f9;
-                border-radius: 8px;
-                padding: 8px;
+                border-radius: 12px;
+                padding: 10px;
                 position: relative;
                 cursor: pointer;
                 background: ${isToday ? '#f0f9ff' : '#fff'};
                 border-color: ${isToday ? '#0ea5e9' : '#f1f5f9'};
+                display: flex;
+                flex-direction: column;
+                gap: 6px;
+                transition: all 0.2s;
+                overflow: hidden;
             `;
+
             dayDiv.onclick = () => {
                 document.getElementById('deliveryFilter').value = dateStr;
                 showTab('dashboard');
                 loadSearchDeliveries();
             };
 
-            dayDiv.innerHTML = `
-                <div style="font-weight: 800; font-size: 14px; color: ${isToday ? '#0ea5e9' : '#1e293b'};">${d}</div>
-                ${count > 0 ? `
-                    <div style="margin-top: 10px; background: #6366f1; color: white; font-size: 10px; padding: 4px 8px; border-radius: 99px; display: inline-block; font-weight: 700;">
-                        ${count} Delivery${count > 1 ? 's' : ''}
-                    </div>
-                ` : ''}
-            `;
+            let content = `<div style="font-weight: 800; font-size: 15px; color: ${isToday ? '#0ea5e9' : '#1e293b'};">${d}</div>`;
+            
+            if (data) {
+                if (data.total_shirts > 0) {
+                    content += `<div style="background: #6366f1; color: white; font-size: 10px; padding: 3px 8px; border-radius: 6px; font-weight: 800; display: flex; align-items: center; gap: 4px;">
+                        <span>👕</span> ${data.total_shirts} Shirt${data.total_shirts > 1 ? 's' : ''}
+                    </div>`;
+                }
+                if (data.total_pants > 0) {
+                    content += `<div style="background: #f59e0b; color: white; font-size: 10px; padding: 3px 8px; border-radius: 6px; font-weight: 800; display: flex; align-items: center; gap: 4px;">
+                        <span>👖</span> ${data.total_pants} Pant${data.total_pants > 1 ? 's' : ''}
+                    </div>`;
+                }
+
+                // Tooltip events
+                dayDiv.onmouseenter = (e) => {
+                    let tooltipHtml = `<h4>Deliveries for ${d} ${monthNames[month]}</h4>`;
+                    Object.entries(data.customers).forEach(([name, counts]) => {
+                        tooltipHtml += `
+                            <div class="tooltip-item">
+                                <span class="tooltip-name">${name}</span>
+                                <div class="tooltip-counts">
+                                    ${counts.s > 0 ? `<span class="tooltip-count-badge" style="background:#6366f1;">${counts.s}S</span>` : ''}
+                                    ${counts.p > 0 ? `<span class="tooltip-count-badge" style="background:#f59e0b;">${counts.p}P</span>` : ''}
+                                </div>
+                            </div>
+                        `;
+                    });
+                    tooltip.innerHTML = tooltipHtml;
+                    tooltip.classList.remove('hidden');
+                    tooltip.style.opacity = '1';
+                };
+
+                dayDiv.onmousemove = (e) => {
+                    const padding = 20;
+                    let x = e.clientX + padding;
+                    let y = e.clientY + padding;
+                    
+                    // Check boundaries
+                    if (x + 250 > window.innerWidth) x = e.clientX - 260;
+                    if (y + 300 > window.innerHeight) y = e.clientY - (tooltip.offsetHeight + 10);
+                    
+                    tooltip.style.left = x + 'px';
+                    tooltip.style.top = y + 'px';
+                };
+
+                dayDiv.onmouseleave = () => {
+                    tooltip.classList.add('hidden');
+                    tooltip.style.opacity = '0';
+                };
+            }
+
+            dayDiv.innerHTML = content;
             grid.appendChild(dayDiv);
         }
     });
@@ -403,7 +495,7 @@ async function loadDashboardStats() {
     const today = new Date().toISOString().split('T')[0];
 
     db.get("SELECT SUM(total) as total FROM orders", (err, row) => {
-        if (!err) document.getElementById('stat-total-revenue').innerText = "₹ " + (row.total || 0).toLocaleString();
+        if (!err) document.getElementById('stat-total-revenue').innerText = "\u20B9 " + (row.total || 0).toLocaleString();
     });
 
     db.get("SELECT COUNT(*) as count FROM orders", (err, row) => {
@@ -422,7 +514,7 @@ async function loadDashboardStats() {
         if (!err) document.getElementById('stat-overdue-orders').innerText = row.count;
     });
 
-    loadOverdueAlerts(today);
+
     loadOverdueDeliveries(today);
 
     // Chart Data (Last 7 Days)
@@ -594,61 +686,7 @@ function updateRevenueChart(data) {
     });
 }
 
-function loadOverdueAlerts(today) {
-    const alertList = document.getElementById('overdueAlerts');
-    if (!alertList) return;
 
-    db.all(`
-        SELECT o.*, c.name FROM orders o 
-        JOIN customers c ON o.customer_id = c.id 
-        WHERE o.delivery_date < ? AND (o.status IS NULL OR o.status != 'DELIVERED')
-        ORDER BY o.delivery_date ASC LIMIT 5
-    `, [today], (err, rows) => {
-        if (!err && rows && rows.length > 0) {
-            const todayDate = new Date(today);
-            alertList.innerHTML = `
-                <div style="background: #fef2f2; border: 1px solid #000; border-radius: 12px; padding: 20px; margin-bottom: 24px;">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-                        <div style="display: flex; align-items: center; gap: 10px;">
-                            <span class="material-symbols-outlined" style="color: #000; font-size: 24px;">priority_high</span>
-                            <h3 style="margin: 0; font-size: 16px; font-weight: 800; color: #000; text-transform: uppercase;">⚠️ Attention Required</h3>
-                        </div>
-                        <button class="secondary" onclick="viewAllOverdue()" style="height: 32px; font-size: 11px; font-weight: 800; background: #fff; border: 1px solid #000; padding: 0 12px; border-radius: 6px;">VIEW ALL</button>
-                    </div>
-                    <div style="display: flex; flex-direction: column; gap: 10px;">
-                        ${rows.map(r => {
-                const delDate = new Date(r.delivery_date);
-                const daysDiff = Math.ceil((todayDate - delDate) / (1000 * 60 * 60 * 24));
-
-                // URGENCY INDICATOR COLORS
-                let urgencyColor = '#fbbf24'; // Yellow (1-2 days)
-                if (daysDiff > 2) urgencyColor = '#f97316'; // Orange (3-7 days)
-                if (daysDiff > 7) urgencyColor = '#ef4444'; // Red (7+ days)
-
-                return `
-                                <div class="card fade-in" style="display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border: 1px solid #000; background: #fff;">
-                                    <div style="display: flex; align-items: center; gap: 15px;">
-                                        <div style="background: ${urgencyColor}; color: #fff; width: 45px; height: 45px; border-radius: 8px; display: flex; flex-direction: column; align-items: center; justify-content: center; font-weight: 900; font-size: 10px; border: 1.5px solid #000;">
-                                            <span style="font-size: 16px;">${daysDiff}</span>
-                                            <span>DAYS</span>
-                                        </div>
-                                        <div>
-                                            <div style="font-weight: 800; font-size: 14px; color: #000;">${r.name}</div>
-                                            <div style="font-size: 11px; color: #4b5563; font-weight: 700;">Bill #${r.bill_number} • Due: ${r.delivery_date}</div>
-                                        </div>
-                                    </div>
-                                    <button class="primary" style="background: #000; border: none; height: 36px; padding: 0 16px; font-weight: 800; border-radius: 8px; font-size: 11px;" onclick="openDeliveryModal(${r.id})">SUBMIT</button>
-                                </div>
-                            `;
-            }).join('')}
-                    </div>
-                </div>
-            `;
-        } else {
-            alertList.innerHTML = '';
-        }
-    });
-}
 
 function viewAllOverdue() {
     showTab('orders');
@@ -894,12 +932,19 @@ async function saveOrderFinal() {
             return showStatus("DUPLICATE BILL! This Bill Number already exists in the system.", "❌");
         }
 
-        // 2. Proceed with saving
+        // 2. Check if customer exists (only for NEW orders)
+        let isExistingCustomer = false;
+        if (!editingOrderId) {
+            const existingCust = await db.get("SELECT id FROM customers WHERE phone = ?", [phone]);
+            if (existingCust) isExistingCustomer = true;
+        }
+
+        // 3. Proceed with saving
         showStatus(editingOrderId ? "Updating order..." : "Saving order...", "⏳");
 
         const { orderId, customerId } = await saveDataAtomic();
 
-        // 3. Save Measurements
+        // 4. Save Measurements
         try {
             await saveMeasurementsAtomic(customerId);
         } catch (mErr) {
@@ -925,24 +970,31 @@ async function saveOrderFinal() {
         document.getElementById('successTitle').innerText = editingOrderId ? "Order Updated!" : "Order Saved!";
         document.getElementById('successMsg').innerText = `Order #${document.getElementById('billNumber').value} has been ${editingOrderId ? 'updated' : 'added'} successfully.`;
 
-        // Show Success Modal
-        const measurements = collectMeasurements();
-        
-        // Detection Logic: Check if items are in the order list OR if measurements are filled
-        const hasShirtItem = orderItems.some(i => i.type.toLowerCase().includes('shirt'));
-        const hasPantItem = orderItems.some(i => i.type.toLowerCase().includes('pant'));
-        
-        const hasShirtMeas = !!(measurements.length || measurements.chest || measurements.shoulder);
-        const hasPantMeas = !!(measurements.waist || measurements.height || measurements.thigh);
+        // Handle Success UI
+        if (isExistingCustomer) {
+            showStatus("Already Registered Number!", "⚠️");
+            resetForm();
+        } else {
+            // Show Success Modal for New Customers or Updates
+            const measurements = collectMeasurements();
+            
+            // Detection Logic: Check if items are in the order list OR if measurements are filled
+            const hasShirtItem = orderItems.some(i => i.type.toLowerCase().includes('shirt'));
+            const hasPantItem = orderItems.some(i => i.type.toLowerCase().includes('pant'));
+            
+            const hasShirtMeas = !!(measurements.length || measurements.chest || measurements.shoulder);
+            const hasPantMeas = !!(measurements.waist || measurements.height || measurements.thigh);
 
-        const showShirt = hasShirtItem || hasShirtMeas;
-        const showPant = hasPantItem || hasPantMeas;
+            const showShirt = hasShirtItem || hasShirtMeas;
+            const showPant = hasPantItem || hasPantMeas;
 
-        document.getElementById('success-print-shirt').style.display = showShirt ? 'flex' : 'none';
-        document.getElementById('success-print-pant').style.display = showPant ? 'flex' : 'none';
-        document.getElementById('success-print-both').style.display = (showShirt && showPant) ? 'flex' : 'none';
-        
-        document.getElementById('successModal').classList.remove('hidden');
+            document.getElementById('success-print-shirt').style.display = showShirt ? 'flex' : 'none';
+            document.getElementById('success-print-pant').style.display = showPant ? 'flex' : 'none';
+            document.getElementById('success-print-both').style.display = (showShirt && showPant) ? 'flex' : 'none';
+            
+            document.getElementById('successModal').classList.remove('hidden');
+        }
+
         backupDB();
         loadDashboardStats();
         loadHistory();
@@ -1348,7 +1400,7 @@ function renderHistoryRows(rows) {
                         ${r.delivery_date}
                     </div>
                 </td>
-                <td style="font-weight: 800; color: #1e293b;">₹ ${r.total}</td>
+                <td style="font-weight: 800; color: #1e293b;">\u20B9 ${r.total}</td>
                 <td>${getStatusHTML(r.status, r.delivery_date)}</td>
                 <td>
                     <div class="actions-cell">
@@ -1441,8 +1493,8 @@ window.viewCustomerHistory = function (cid, name) {
         if (!rows || rows.length === 0) {
             tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; padding: 40px; color: #94a3b8;">No orders found for this customer.</td></tr>';
             document.getElementById('hist-total-orders').innerText = "0";
-            document.getElementById('hist-total-spent').innerText = "₹ 0";
-            document.getElementById('hist-total-balance').innerText = "₹ 0";
+            document.getElementById('hist-total-spent').innerText = "\u20B9 0";
+            document.getElementById('hist-total-balance').innerText = "\u20B9 0";
             return;
         }
 
@@ -1463,8 +1515,8 @@ window.viewCustomerHistory = function (cid, name) {
                     <td style="padding: 12px; font-size: 12px; font-weight: 800; color: #6366f1;">#${r.bill_number}</td>
                     <td style="padding: 12px; font-size: 12px; color: #475569;">${r.item_summary || 'N/A'}</td>
                     <td style="padding: 12px;">
-                        <div style="font-size: 13px; font-weight: 800; color: #000;">₹ ${r.total}</div>
-                        <div style="font-size: 10px; font-weight: 700; color: ${r.balance > 0 ? '#ef4444' : '#64748b'};">Bal: ₹ ${r.balance}</div>
+                        <div style="font-size: 13px; font-weight: 800; color: #000;">\u20B9 ${r.total}</div>
+                        <div style="font-size: 10px; font-weight: 700; color: ${r.balance > 0 ? '#ef4444' : '#64748b'};">Bal: \u20B9 ${r.balance}</div>
                     </td>
                     <td style="padding: 12px; font-size: 11px;">
                         ${statusHtml}
@@ -1481,8 +1533,8 @@ window.viewCustomerHistory = function (cid, name) {
 
         // Update Stats
         document.getElementById('hist-total-orders').innerText = rows.length;
-        document.getElementById('hist-total-spent').innerText = "₹ " + totalSpent;
-        document.getElementById('hist-total-balance').innerText = "₹ " + totalBalance;
+        document.getElementById('hist-total-spent').innerText = "\u20B9 " + totalSpent;
+        document.getElementById('hist-total-balance').innerText = "\u20B9 " + totalBalance;
         document.getElementById('hist-total-balance').style.color = totalBalance > 0 ? '#ef4444' : '#10b981';
     });
 };
@@ -1536,7 +1588,7 @@ function loadHistoryPayments() {
             <tr>
                 <td style="padding: 12px; font-size: 13px; border-bottom: 1px solid #f1f5f9;">${new Date(r.payment_date).toLocaleDateString()}</td>
                 <td style="padding: 12px; font-size: 13px; font-weight: 700; border-bottom: 1px solid #f1f5f9;">${r.bill_number}</td>
-                <td style="padding: 12px; font-size: 13px; font-weight: 800; color: #10b981; border-bottom: 1px solid #f1f5f9;">₹ ${r.amount}</td>
+                <td style="padding: 12px; font-size: 13px; font-weight: 800; color: #10b981; border-bottom: 1px solid #f1f5f9;">\u20B9 ${r.amount}</td>
                 <td style="padding: 12px; font-size: 13px; border-bottom: 1px solid #f1f5f9;">${r.payment_mode}</td>
             </tr>
         `).join('');
@@ -1664,13 +1716,13 @@ function openDeliveryModal(orderId) {
                 </div>
             </div>
             <hr style="margin: 15px 0; border: 0; border-top: 1px solid var(--border);">
-            <p><span>Total Amount:</span> <span>₹ ${order.total}</span></p>
-            <p><span>Advance Paid:</span> <span>₹ ${order.advance}</span></p>
-            <p style="font-size: 16px; margin-top: 5px;"><span>Balance Due:</span> <b style="color:var(--danger);">₹ ${balance}</b></p>
+            <p><span>Total Amount:</span> <span>\u20B9 ${order.total}</span></p>
+            <p><span>Advance Paid:</span> <span>\u20B9 ${order.advance}</span></p>
+            <p style="font-size: 16px; margin-top: 5px;"><span>Balance Due:</span> <b style="color:var(--danger);">\u20B9 ${balance}</b></p>
             ${isDelivered ? `
                 <hr style="margin: 15px 0; border: 0; border-top: 1px solid var(--border);">
                 <p><span>Payment Mode:</span> <b>${order.payment_mode || 'N/A'}</b></p>
-                <p><span>Final Paid:</span> <b style="color:var(--success);">₹ ${order.final_payment || 0}</b></p>
+                <p><span>Final Paid:</span> <b style="color:var(--success);">\u20B9 ${order.final_payment || 0}</b></p>
             ` : ''}
         `;
 
@@ -1679,7 +1731,7 @@ function openDeliveryModal(orderId) {
 
         if (isDelivered) {
             paymentSection.classList.add('hidden');
-            actionBtn.innerText = "🖨️ Print Bill";
+            actionBtn.innerText = "Print Bill";
             actionBtn.onclick = () => { printBillA5(order); closeModal(); };
         } else {
             paymentSection.classList.remove('hidden');
@@ -1737,6 +1789,7 @@ function printBillA5(orderRef) {
             const htmlContent = `
                 <html>
                 <head>
+                    <meta charset="UTF-8">
                     <title>Bill #${order.bill_number}</title>
                     <style>
                         * { box-sizing: border-box; font-family: 'Inter', 'Segoe UI', Arial, sans-serif; color: #000; }
@@ -1796,7 +1849,7 @@ function printBillA5(orderRef) {
                 </head>
                 <body>
                     <div class="no-print" style="text-align: center; padding: 10px; background: #000; position: sticky; top: 0; z-index: 1000; margin-bottom: 20px; display: flex; justify-content: center; gap: 15px; align-items: center; border-bottom: 2px solid #333;">
-                        <button onclick="sendToPrinter()" style="padding: 8px 25px; font-size: 14px; font-weight: bold; background: #22c55e; color: #fff; border: none; cursor: pointer; border-radius: 4px;">🖨️ PRINT</button>
+                        <button onclick="sendToPrinter()" style="padding: 8px 25px; font-size: 14px; font-weight: bold; background: #22c55e; color: #fff; border: none; cursor: pointer; border-radius: 4px;">PRINT</button>
                         <button onclick="window.close()" style="padding: 8px 20px; font-size: 14px; font-weight: bold; background: #444; color: #fff; border: none; cursor: pointer; border-radius: 4px;">CLOSE</button>
                     </div>
                     <div class="bill-wrapper">
@@ -1832,8 +1885,8 @@ function printBillA5(orderRef) {
                                     <tr>
                                         <td class="col-item" style="font-weight: 700;">${i.item_type}</td>
                                         <td class="col-qty">${i.quantity}</td>
-                                        <td class="col-price">₹ ${i.price.toLocaleString('en-IN')}</td>
-                                        <td class="col-total">₹ ${i.amount.toLocaleString('en-IN')}</td>
+                                        <td class="col-price">&#8377; ${i.price.toLocaleString('en-IN')}</td>
+                                        <td class="col-total">&#8377; ${i.amount.toLocaleString('en-IN')}</td>
                                     </tr>
                                 `).join('')}
                             </tbody>
@@ -1843,15 +1896,15 @@ function printBillA5(orderRef) {
                             <table class="summary-table">
                                 <tr>
                                     <td class="summary-label">Total Amount:</td>
-                                    <td class="summary-value">₹ ${order.total.toLocaleString('en-IN')}</td>
+                                    <td class="summary-value">&#8377; ${order.total.toLocaleString('en-IN')}</td>
                                 </tr>
                                 <tr>
                                     <td class="summary-label">Advance Paid:</td>
-                                    <td class="summary-value">₹ ${order.advance.toLocaleString('en-IN')}</td>
+                                    <td class="summary-value">&#8377; ${order.advance.toLocaleString('en-IN')}</td>
                                 </tr>
                                 <tr class="balance-row">
                                     <td class="summary-label">Balance Due:</td>
-                                    <td class="summary-value">₹ ${(order.total - order.advance).toLocaleString('en-IN')}</td>
+                                    <td class="summary-value">&#8377; ${(order.total - order.advance).toLocaleString('en-IN')}</td>
                                 </tr>
                             </table>
                         </div>
@@ -1898,6 +1951,7 @@ function printBillFromData(billNumber, filterType = 'both') {
             const htmlContent = `
                 <html>
                 <head>
+                    <meta charset="UTF-8">
                     <title>Bill #${order.bill_number}</title>
                     <style>
                         * { box-sizing: border-box; font-family: 'Inter', 'Segoe UI', Arial, sans-serif; color: #000; }
@@ -1957,7 +2011,7 @@ function printBillFromData(billNumber, filterType = 'both') {
                 </head>
                 <body>
                     <div class="print-btn-container">
-                        <button class="print-btn" onclick="window.print()">🖨️ PRINT FINAL BILL</button>
+                        <button class="print-btn" onclick="window.print()">PRINT FINAL BILL</button>
                     </div>
                     <div class="bill-wrapper">
                         <div class="header">
@@ -1992,8 +2046,8 @@ function printBillFromData(billNumber, filterType = 'both') {
                                     <tr>
                                         <td class="col-item" style="font-weight: 700;">${i.item_type}</td>
                                         <td class="col-qty">${i.quantity}</td>
-                                        <td class="col-price">₹ ${i.price.toLocaleString('en-IN')}</td>
-                                        <td class="col-total">₹ ${i.amount.toLocaleString('en-IN')}</td>
+                                        <td class="col-price">&#8377; ${i.price.toLocaleString('en-IN')}</td>
+                                        <td class="col-total">&#8377; ${i.amount.toLocaleString('en-IN')}</td>
                                     </tr>
                                 `).join('')}
                             </tbody>
@@ -2003,16 +2057,16 @@ function printBillFromData(billNumber, filterType = 'both') {
                             <table class="summary-table">
                                 <tr>
                                     <td class="summary-label">Subtotal</td>
-                                    <td class="summary-value">₹ ${filteredItems.reduce((s, i) => s + i.amount, 0).toLocaleString('en-IN')}</td>
+                                    <td class="summary-value">&#8377; ${filteredItems.reduce((s, i) => s + i.amount, 0).toLocaleString('en-IN')}</td>
                                 </tr>
                                 ${filterType === 'both' ? `
                                 <tr>
                                     <td class="summary-label">Advance Paid</td>
-                                    <td class="summary-value">₹ ${order.advance.toLocaleString('en-IN')}</td>
+                                    <td class="summary-value">&#8377; ${order.advance.toLocaleString('en-IN')}</td>
                                 </tr>
                                 <tr class="balance-row">
                                     <td class="summary-label" style="color: #ef4444;">Balance Due</td>
-                                    <td class="summary-value" style="color: #ef4444;">₹ ${(filteredItems.reduce((s, i) => s + i.amount, 0) - order.advance).toLocaleString('en-IN')}</td>
+                                    <td class="summary-value" style="color: #ef4444;">&#8377; ${(filteredItems.reduce((s, i) => s + i.amount, 0) - order.advance).toLocaleString('en-IN')}</td>
                                 </tr>
                                 ` : `
                                 <tr>
@@ -2142,6 +2196,42 @@ function exportCSV(type) {
     });
 }
 
+window.exportFullData = function() {
+    const sql = `
+        SELECT 
+            c.name as 'Customer Name', 
+            c.phone as 'Phone Number',
+            s.length as 'S-Length', s.chest as 'S-Chest', s.chest_correct as 'S-Chest Ready', s.hip as 'S-Hip', s.hip_round as 'S-Hip Ready', s.seat as 'S-Seat', s.seat_round as 'S-Seat Ready', s.shoulder as 'S-Shoulder', s.sleeve_height as 'S-Sleeve', s.bicep_round as 'S-Bicep', s.cuff_round_finish as 'S-Cuff', s.neck as 'S-Neck', s.cuff_height as 'S-Cuff Ht', s.fit_style as 'S-Fit', s.front_patti_style as 'S-Patti', s.apple_cut as 'S-Bottom',
+            p.height as 'P-Height', p.waist as 'P-Waist', p.seat_pant as 'P-Seat', p.thigh as 'P-Thigh', p.knee_loose as 'P-Knee', p.bottom_loose as 'P-Bottom', p.zip_length as 'P-Zip', p.in_seam as 'P-Inseam', p.pant_type as 'P-Type', p.pocket_type as 'P-Pocket', p.back_pocket as 'P-Back Pkt', p.mobile_pocket as 'P-Mobile', p.watch_pocket as 'P-Watch',
+            (SELECT COUNT(*) FROM orders WHERE customer_id = c.id) as 'Total Orders',
+            (SELECT SUM(total) FROM orders WHERE customer_id = c.id) as 'Total Billing',
+            (SELECT SUM(balance) FROM orders WHERE customer_id = c.id) as 'Pending Balance'
+        FROM customers c
+        LEFT JOIN shirt_measurements s ON c.id = s.customer_id
+        LEFT JOIN pant_measurements p ON c.id = p.customer_id
+    `;
+
+    showStatus("Generating Full Excel Report...", "⏳");
+
+    db.all(sql, (err, rows) => {
+        if (err || !rows.length) return showStatus("No data to export", "❌");
+        
+        const headers = Object.keys(rows[0]).join(",");
+        const content = rows.map(r => Object.values(r).map(v => `"${v || ''}"`).join(",")).join("\n");
+        const csv = headers + "\n" + content;
+
+        const blob = new Blob([csv], { type: 'text/csv' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `Croma_Tailors_Full_Backup_${new Date().toISOString().split('T')[0]}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        showStatus("Excel Report Downloaded!", "✅");
+    });
+};
+
 // --- AUTO BACKUP SYSTEM ---
 const backupDir = path.join(os.homedir(), "Documents", "TailorBackup");
 
@@ -2245,7 +2335,6 @@ function loadBackupList() {
 
 async function restoreBackup(fileName) {
     const backupPath = path.join(backupDir, fileName);
-
     const confirmRestore = confirm(
         "⚠️ CAUTION: RESTORE DATA\n\n" +
         "This will permanently overwrite your current shop data with the selected backup.\n\n" +
@@ -2265,6 +2354,24 @@ async function restoreBackup(fileName) {
         alert("CRITICAL ERROR: Could not restore database.");
     }
 }
+
+window.openBackupFolder = function() {
+    if (fs.existsSync(backupDir)) {
+        shell.openPath(backupDir);
+    } else {
+        showStatus("Backup folder not found yet", "⚠️");
+    }
+};
+
+window.uploadToCloudManual = function() {
+    if (fs.existsSync(backupDir)) {
+        shell.openPath(backupDir);
+        shell.openExternal('https://drive.google.com/drive/u/0/my-drive');
+        showStatus("Opening Folder & Google Drive...", "🌐");
+    } else {
+        showStatus("Backup folder not created yet", "⚠️");
+    }
+};
 
 function confirmFactoryReset() {
     const confirmReset = confirm("⚠️ FACTORY RESET\n\nThis will DELETE ALL DATA and start fresh. This CANNOT be undone.\n\nType 'RESET' in your mind then click OK if you are sure.");
@@ -2429,20 +2536,17 @@ function generateMeasurementSlip(customerInfo, data, forceType = 'both') {
     <!DOCTYPE html>
     <html>
     <head>
+        <meta charset="UTF-8">
         <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap" rel="stylesheet">
         <style>
             /* 1. Core print settings for A5 Portrait */
             @page {
                 size: A5 portrait;
-                margin: 0mm 8mm 8mm 8mm; /* Remove top margin entirely */
+                margin: 5mm 8mm 5mm 8mm;
             }
 
             @media print {
-                /* Hide UI elements like buttons during print */
-                .no-print, #print-btn, .action-bar {
-                    display: none !important;
-                }
-
+                .no-print { display: none !important; }
                 body {
                     width: 148mm;
                     height: 210mm;
@@ -2451,7 +2555,6 @@ function generateMeasurementSlip(customerInfo, data, forceType = 'both') {
                     -webkit-print-color-adjust: exact;
                     print-color-adjust: exact;
                     background-color: white;
-                    font-family: 'Inter', sans-serif;
                 }
             }
 
@@ -2460,19 +2563,9 @@ function generateMeasurementSlip(customerInfo, data, forceType = 'both') {
                 margin: 0;
                 padding: 0;
                 color: #000;
+                background: #fff;
             }
 
-        <style>
-            @page {
-                size: A5;
-                margin: 0;
-            }
-            body {
-                margin: 0;
-                padding: 0;
-                font-family: 'Inter', -apple-system, sans-serif;
-                background: #f4f4f4;
-            }
             * { box-sizing: border-box; }
 
             .page {
@@ -2480,42 +2573,44 @@ function generateMeasurementSlip(customerInfo, data, forceType = 'both') {
                 height: 210mm;
                 background: white;
                 margin: 0 auto;
-                padding: 8mm;
+                padding: 5mm 8mm;
                 display: flex;
                 flex-direction: column;
                 page-break-after: always;
                 position: relative;
                 overflow: hidden;
             }
-            .page:last-child { page-break-after: auto; }
 
             .header-box {
                 text-align: center;
-                border-bottom: 2.5px solid #000;
-                padding-bottom: 8px;
-                margin-bottom: 10px;
+                border-bottom: 2px solid #000;
+                padding-bottom: 10px;
+                margin-bottom: 15px;
             }
+
             .header-box h1 {
-                display: none;
+                display: block;
+                font-size: 24px;
+                font-weight: 900;
+                margin: 0;
+                letter-spacing: 1px;
+                text-transform: uppercase;
             }
+
             .header-box .label {
-                font-size: 18px;
-                font-weight: 500;
+                font-size: 14px;
+                font-weight: 700;
                 text-transform: uppercase;
                 display: block;
-                margin-top: 10px;
-                margin-bottom: 20px;
+                margin-top: 2px;
+                color: #333;
             }
 
             .content {
                 flex: 1;
                 display: flex;
                 flex-direction: column;
-                gap: 14px; /* Best Fix: 14px */
-            }
-
-            .top-section {
-                flex: 0; /* Don't force stretch */
+                gap: 12px;
             }
 
             .top-info {
@@ -2523,22 +2618,23 @@ function generateMeasurementSlip(customerInfo, data, forceType = 'both') {
                 flex-direction: column;
                 gap: 4px;
                 font-size: 13px;
-                margin-bottom: 25px;
+                margin-bottom: 15px;
             }
+
             .info-item {
                 display: flex;
                 align-items: center;
                 line-height: 1.4;
             }
+
             .info-label {
-                font-weight: normal;
                 width: 110px;
-                color: #000;
+                font-weight: normal;
             }
+
             .info-value {
-                font-weight: 500;
-                color: #000;
-                padding-left: 12px;
+                font-weight: 700;
+                padding-left: 10px;
                 border-left: 1.5px solid #000;
             }
 
@@ -2547,6 +2643,7 @@ function generateMeasurementSlip(customerInfo, data, forceType = 'both') {
                 justify-content: space-between;
                 margin-top: 5px;
             }
+
             .col-left, .col-right {
                 width: 48%;
                 display: flex;
@@ -2559,67 +2656,51 @@ function generateMeasurementSlip(customerInfo, data, forceType = 'both') {
                 align-items: center;
                 height: 28px;
             }
+
             .label-text {
                 font-size: 12px;
-                font-weight: normal;
                 width: 85px;
-                color: #000;
             }
+
             .m-boxes {
                 display: flex;
                 gap: 5px;
             }
+
             .data-box {
                 border: 1px solid black;
                 text-align: center;
-                padding: 0px 5px;
+                padding: 0 5px;
                 font-size: 13px;
-                font-weight: 500;
-                background: #fff;
+                font-weight: 700;
                 height: 24px;
                 width: 60px;
                 display: flex;
                 align-items: center;
                 justify-content: center;
-                text-transform: uppercase;
             }
+
             .data-box.small { width: 40px; }
-            .data-box.wide { width: 85px; }
+            .data-box.wide { width: 90px; }
 
             .footer-notes {
-                margin-top: 20px;
+                margin-top: 15px;
                 display: flex;
                 flex-direction: column;
-                gap: 8px;
+                gap: 6px;
             }
+
             .footer-row {
                 display: flex;
                 font-size: 12px;
             }
+
             .footer-label {
-                font-weight: normal;
                 width: 100px;
             }
-            .footer-val {
-                font-weight: 500;
-            }
-                top: -9px;
-                left: 10px;
-                background: #fff;
-                padding: 0 5px;
-                font-weight: 900;
-                font-size: 10px;
-            }
 
-            .footer {
-                margin-top: 10px;
-                display: flex;
-                justify-content: space-between;
-                align-items: flex-end;
-                font-size: 10px;
-                font-weight: bold;
-                border-top: 1px dashed #ccc;
-                padding-top: 5px;
+            .footer-val {
+                font-weight: 700;
             }
 
             .no-print {
@@ -2632,7 +2713,6 @@ function generateMeasurementSlip(customerInfo, data, forceType = 'both') {
                 display: flex;
                 justify-content: center;
                 gap: 10px;
-                border-bottom: 1px solid #333;
             }
         </style>
     </head>

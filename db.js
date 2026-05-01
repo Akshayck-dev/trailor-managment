@@ -2,9 +2,17 @@ const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const { app } = require('electron');
 
-// Move database to local folder for portability, while keeping Electron's cache in system AppData
+if (app.isPackaged) {
+    console.log = () => {};
+    console.debug = () => {};
+    console.info = () => {};
+}
+
+// Use userData for packaged apps (app.asar is read-only), fallback to __dirname for development
 const fs = require('fs');
-const dbDir = path.join(__dirname, 'electron_data');
+const dbDir = app.isPackaged
+    ? path.join(app.getPath('userData'), 'electron_data')
+    : path.join(__dirname, 'electron_data');
 if (!fs.existsSync(dbDir)) {
     fs.mkdirSync(dbDir, { recursive: true });
 }
@@ -209,6 +217,7 @@ async function initialize() {
         await run(`INSERT OR IGNORE INTO settings (key, value) VALUES ('bill_counter', '0')`);
         await run(`CREATE TABLE IF NOT EXISTS payments (id INTEGER PRIMARY KEY AUTOINCREMENT, order_id INTEGER, amount REAL, payment_date DATETIME DEFAULT CURRENT_TIMESTAMP, payment_mode TEXT, FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE CASCADE)`);
         await run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone)`);
+        await run(`CREATE TABLE IF NOT EXISTS license (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT, activated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
 
         // 3. Schema Upgrades
         await upgradeSchema();

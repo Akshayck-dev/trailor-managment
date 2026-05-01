@@ -4,6 +4,13 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { exec: execCmd } = require('child_process');
 const SECRET_SALT = "CROMA_SECURE_2024";
+
+if (app.isPackaged) {
+    console.log = () => {};
+    console.debug = () => {};
+    console.info = () => {};
+}
+
 const db = require('./db');
 
 // Helper to get HWID
@@ -129,7 +136,7 @@ function createWindow() {
         win.loadFile('index.html').catch(logCrash);
         win.once('ready-to-show', () => win.show());
         win.setMenuBarVisibility(false);
-        win.webContents.openDevTools();
+        if (!app.isPackaged) win.webContents.openDevTools();
 
         win.webContents.on('render-process-gone', (event, details) => {
             logCrash(`Renderer Process Gone: ${details.reason} (${details.exitCode})`);
@@ -159,7 +166,7 @@ ipcMain.handle('print-html', async (event, html) => {
     });
 
     const base64Html = Buffer.from(html).toString('base64');
-    printWin.loadURL(`data:text/html;base64,${base64Html}`);
+    printWin.loadURL(`data:text/html;charset=utf-8;base64,${base64Html}`);
     return true;
 });
 
