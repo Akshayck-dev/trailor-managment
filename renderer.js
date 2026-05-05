@@ -2,6 +2,7 @@ const { ipcRenderer, shell } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const XLSX = require('xlsx');
 
 // Console logs enabled for debugging
 
@@ -322,6 +323,7 @@ function showTab(tabId) {
         }
         if (tabId === 'orders') loadHistory();
         if (tabId === 'customers') loadCustomers();
+        if (tabId === 'accounts') loadAccountsRepo();
         if (tabId === 'settings') loadBackupList();
         if (tabId === 'delivery-calendar') renderCalendar();
     } catch (e) {
@@ -1164,7 +1166,15 @@ function searchOrders() {
 
 function searchCustomers() {
     const q = (document.getElementById('customerSearch').value || "").toLowerCase();
-    db.all("SELECT * FROM customers WHERE LOWER(name) LIKE ? OR phone LIKE ? ORDER BY created_at DESC LIMIT 200", [`%${q}%`, `%${q}%`], (err, rows) => {
+    const sql = `
+        SELECT c.*, 
+               (SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id) as order_count,
+               (SELECT SUM(balance) FROM orders o WHERE o.customer_id = c.id) as total_balance
+        FROM customers c 
+        WHERE LOWER(c.name) LIKE ? OR c.phone LIKE ? 
+        ORDER BY c.created_at DESC LIMIT 200
+    `;
+    db.all(sql, [`%${q}%`, `%${q}%`], (err, rows) => {
         if (!err) renderCustomerRows(rows);
     });
 }
@@ -1452,7 +1462,14 @@ function renderHistoryRows(rows) {
 }
 
 function loadCustomers() {
-    db.all("SELECT * FROM customers ORDER BY created_at DESC LIMIT 200", (err, rows) => {
+    const sql = `
+        SELECT c.*, 
+               (SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id) as order_count,
+               (SELECT SUM(balance) FROM orders o WHERE o.customer_id = c.id) as total_balance
+        FROM customers c 
+        ORDER BY created_at DESC LIMIT 200
+    `;
+    db.all(sql, (err, rows) => {
         if (!err) renderCustomerRows(rows);
     });
 }
@@ -1461,9 +1478,11 @@ function renderCustomerRows(rows) {
     const tbody = document.getElementById('customersBody');
     tbody.innerHTML = rows.map(r => `
         <tr>
-            <td>${r.name}</td>
-            <td>${r.phone}</td>
-            <td>${formatDateTime(r.created_at)}</td>
+            <td style="font-weight: 700;">${r.name}</td>
+            <td style="font-size: 13px;">${r.phone}</td>
+            <td style="font-weight: 800; color: #6366f1;">${r.order_count || 0}</td>
+            <td style="font-weight: 800; color: ${ (r.total_balance || 0) > 0 ? '#ef4444' : '#10b981' };">₹ ${r.total_balance || 0}</td>
+            <td style="font-size: 12px; color: #64748b;">${formatDateTime(r.created_at)}</td>
             <td style="text-align: right;">
                 <button class="secondary" style="height: 28px; padding: 0 12px; border-color: #6366f1; color: #6366f1; font-weight: 700;" onclick="viewCustomerHistory(${r.id}, '${r.name.replace(/'/g, "\\'")}')">📜 History</button>
             </td>
@@ -1594,6 +1613,112 @@ function loadHistoryPayments() {
         `).join('');
     });
 }
+
+// --- NEW REPOSITORY LOGIC ---
+
+window.loadAccountsRepo = function() {
+    const q = (document.getElementById('accountsSearch')?.value || "").toLowerCase().trim();
+    
+    // 1. STATS: Total Sales, Total Pending
+    db.get("SELECT SUM(total) as sales, SUM(balance) as pending FROM orders", (err, row) => {
+        if (!err && row) {
+            document.getElementById('acc-total-sales').innerText = "₹ " + (row.sales || 0).toLocaleString();
+            document.getElementById('acc-total-pending').innerText = "₹ " + (row.pending || 0).toLocaleString();
+        }
+    });
+
+    // 2. STATS: Total Collected & Cash in Hand
+    db.all("SELECT payment_mode, SUM(amount) as total FROM payments GROUP BY payment_mode", (err, rows) => {
+        if (!err && rows) {
+            let totalCollected = 0;
+            let cashInHand = 0;
+            let modeHtml = '';
+
+            rows.forEach(r => {
+                totalCollected += r.total;
+                if (r.payment_mode === 'Cash') cashInHand = r.total;
+                
+                const icon = r.payment_mode === 'Cash' ? '💵' : (r.payment_mode === 'GPay' ? '📱' : '💳');
+                modeHtml += `
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px; background: #f8fafc; border-radius: 8px; border: 1px solid #f1f5f9;">
+                        <span style="font-size: 13px; font-weight: 700;">${icon} ${r.payment_mode}</span>
+                        <span style="font-weight: 800; color: #1e293b;">₹ ${r.total.toLocaleString()}</span>
+                    </div>`;
+            });
+
+            document.getElementById('acc-total-collected').innerText = "₹ " + totalCollected.toLocaleString();
+            document.getElementById('acc-total-cash').innerText = "₹ " + cashInHand.toLocaleString();
+            document.getElementById('acc-mode-list').innerHTML = modeHtml || '<div style="text-align:center; color:#94a3b8; font-size:12px;">No records</div>';
+        }
+    });
+
+    // 3. LEDGER: Recent Payments
+    let sql = `
+        SELECT p.*, o.bill_number 
+        FROM payments p
+        JOIN orders o ON p.order_id = o.id
+        WHERE (LOWER(o.bill_number) LIKE ?)
+        ORDER BY p.payment_date DESC
+        LIMIT 100
+    `;
+    
+    db.all(sql, [`%${q}%`], (err, rows) => {
+        const tbody = document.getElementById('accountsBody');
+        if (err || !rows) return;
+        
+        tbody.innerHTML = rows.map(r => `
+            <tr>
+                <td style="font-size: 12px; color: #64748b;">${new Date(r.payment_date).toLocaleDateString()}</td>
+                <td style="font-weight: 800; color: #6366f1;">#${r.bill_number}</td>
+                <td style="font-weight: 800; color: #10b981;">₹ ${r.amount}</td>
+                <td style="font-size: 12px;">${r.payment_mode}</td>
+            </tr>
+        `).join('');
+    });
+}
+
+window.viewOrderFromPayment = function(oid) {
+    openDeliveryModal(oid);
+}
+
+// --- ADD CUSTOMER MODAL LOGIC ---
+
+window.openAddCustomerModal = function() {
+    document.getElementById('newCustPhone').value = '';
+    document.getElementById('newCustName').value = '';
+    document.getElementById('addCustomerModal').classList.remove('hidden');
+};
+
+window.closeAddCustomerModal = function() {
+    document.getElementById('addCustomerModal').classList.add('hidden');
+};
+
+window.saveNewCustomer = async function() {
+    const phone = document.getElementById('newCustPhone').value.trim();
+    const name = document.getElementById('newCustName').value.trim();
+
+    if (!phone || phone.length !== 10 || isNaN(phone)) {
+        return showStatus("Please enter a valid 10-digit phone number", "❌");
+    }
+    if (!name) {
+        return showStatus("Please enter customer name", "❌");
+    }
+
+    try {
+        await db.run("INSERT INTO customers (name, phone) VALUES (?, ?)", [name, phone]);
+        showStatus("Customer Registered Successfully!", "✅");
+        closeAddCustomerModal();
+        loadCustomers(); // Refresh the list
+    } catch (err) {
+        if (err.message && err.message.includes("UNIQUE")) {
+            showStatus("This phone number is already registered!", "❌");
+        } else {
+            showStatus("Error: " + err.message, "❌");
+        }
+    }
+};
+
+
 ;
 
 let currentPayingOrderId = null;
@@ -2590,7 +2715,7 @@ function generateMeasurementSlip(customerInfo, data, forceType = 'both') {
 
             .header-box h1 {
                 display: block;
-                font-size: 24px;
+                font-size: 28px;
                 font-weight: 900;
                 margin: 0;
                 letter-spacing: 1px;
@@ -2598,7 +2723,7 @@ function generateMeasurementSlip(customerInfo, data, forceType = 'both') {
             }
 
             .header-box .label {
-                font-size: 14px;
+                font-size: 16px;
                 font-weight: 700;
                 text-transform: uppercase;
                 display: block;
@@ -2616,91 +2741,102 @@ function generateMeasurementSlip(customerInfo, data, forceType = 'both') {
             .top-info {
                 display: flex;
                 flex-direction: column;
-                gap: 4px;
-                font-size: 13px;
-                margin-bottom: 15px;
+                gap: 8px;
+                font-size: 16px;
+                margin-bottom: 20px;
             }
 
             .info-item {
                 display: flex;
                 align-items: center;
-                line-height: 1.4;
+                line-height: 1.5;
             }
 
             .info-label {
-                width: 110px;
-                font-weight: normal;
+                width: 140px;
+                font-weight: 700;
+                font-size: 16px;
             }
 
             .info-value {
                 font-weight: 700;
-                padding-left: 10px;
-                border-left: 1.5px solid #000;
+                padding-left: 12px;
+                border-left: 2px solid #000;
+                font-size: 18px;
             }
 
             .measurement-section {
                 display: flex;
                 justify-content: space-between;
-                margin-top: 5px;
+                margin-top: 10px;
             }
 
             .col-left, .col-right {
                 width: 48%;
                 display: flex;
                 flex-direction: column;
-                gap: 8px;
+                gap: 12px;
             }
 
             .field-row {
                 display: flex;
-                align-items: center;
-                height: 28px;
+                align-items: flex-start;
+                min-height: 36px;
             }
 
             .label-text {
-                font-size: 12px;
-                width: 85px;
+                font-size: 16px;
+                font-weight: 700;
+                width: 100px;
+                padding-top: 6px;
             }
 
             .m-boxes {
                 display: flex;
-                gap: 5px;
+                gap: 6px;
+                flex-wrap: wrap;
             }
 
             .data-box {
-                border: 1px solid black;
+                border: 1.5px solid black;
                 text-align: center;
-                padding: 0 5px;
-                font-size: 13px;
-                font-weight: 700;
-                height: 24px;
-                width: 60px;
+                padding: 4px 8px;
+                font-size: 17px;
+                font-weight: 900;
+                min-height: 32px;
+                height: auto;
+                width: 75px;
                 display: flex;
                 align-items: center;
                 justify-content: center;
+                line-height: 1.2;
+                word-break: break-word;
             }
 
-            .data-box.small { width: 40px; }
-            .data-box.wide { width: 90px; }
+            .data-box.small { width: 50px; }
+            .data-box.wide { width: 120px; }
 
             .footer-notes {
-                margin-top: 15px;
+                margin-top: 20px;
                 display: flex;
                 flex-direction: column;
-                gap: 6px;
+                gap: 10px;
             }
 
             .footer-row {
                 display: flex;
-                font-size: 12px;
+                font-size: 16px;
+                align-items: flex-start;
             }
 
             .footer-label {
-                width: 100px;
+                width: 120px;
+                font-weight: 700;
             }
 
             .footer-val {
                 font-weight: 700;
+                font-size: 16px;
             }
 
             .no-print {
@@ -2965,3 +3101,118 @@ function showTomorrowReminders() {
 setInterval(checkDailyReminder, 60000);
 // Also check on startup
 setTimeout(checkDailyReminder, 5000);
+
+window.handleImport = function(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    showStatus("Reading Excel file...", "⏳");
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+        try {
+            const data = new Uint8Array(e.target.result);
+            const workbook = XLSX.read(data, { type: 'array' });
+            const firstSheetName = workbook.SheetNames[0];
+            const worksheet = workbook.Sheets[firstSheetName];
+            const jsonData = XLSX.utils.sheet_to_json(worksheet);
+
+            if (jsonData.length === 0) {
+                return showStatus("Excel file is empty!", "❌");
+            }
+
+            showStatus(`Importing ${jsonData.length} records...`, "⏳");
+            let successCount = 0;
+
+            for (const row of jsonData) {
+                // Map fields from Excel (using common names or exported headers)
+                const name = row['Customer Name'] || row['Name'] || row['name'];
+                const phone = row['Phone Number'] || row['Phone'] || row['phone'] || row['Mobile'] || row['mobile'];
+
+                if (!name) continue;
+
+                // 1. Insert or Get Customer
+                let customerId;
+                const existing = await db.get("SELECT id FROM customers WHERE name = ? AND phone = ?", [name, phone || ""]);
+                
+                if (existing) {
+                    customerId = existing.id;
+                } else {
+                    const res = await db.run("INSERT INTO customers (name, phone, created_at) VALUES (?, ?, ?)", 
+                        [name, phone || "", new Date().toISOString()]);
+                    customerId = res.lastID;
+                }
+
+                // 2. Import Shirt Measurements
+                const sData = {
+                    length: row['S-Length'] || row['Shirt Length'],
+                    chest: row['S-Chest'] || row['Shirt Chest'],
+                    chest_correct: row['S-Chest Ready'],
+                    hip: row['S-Hip'],
+                    hip_round: row['S-Hip Ready'],
+                    seat: row['S-Seat'],
+                    seat_round: row['S-Seat Ready'],
+                    shoulder: row['S-Shoulder'],
+                    sleeve_height: row['S-Sleeve'],
+                    bicep_round: row['S-Bicep'],
+                    cuff_round_finish: row['S-Cuff'],
+                    neck: row['S-Neck'],
+                    cuff_height: row['S-Cuff Ht'],
+                    fit_style: row['S-Fit'],
+                    front_patti_style: row['S-Patti'],
+                    apple_cut: row['S-Bottom'] === 'APPLE CUT' ? 'YES' : 'NO'
+                };
+
+                const hasShirt = Object.values(sData).some(v => v != null && v !== "");
+                if (hasShirt) {
+                    await db.run(`INSERT OR REPLACE INTO shirt_measurements 
+                        (customer_id, length, chest, chest_correct, hip, hip_round, seat, seat_round, shoulder, sleeve_height, bicep_round, cuff_round_finish, neck, cuff_height, fit_style, front_patti_style, apple_cut)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                        [customerId, sData.length, sData.chest, sData.chest_correct, sData.hip, sData.hip_round, sData.seat, sData.seat_round, sData.shoulder, sData.sleeve_height, sData.bicep_round, sData.cuff_round_finish, sData.neck, sData.cuff_height, sData.fit_style, sData.front_patti_style, sData.apple_cut]
+                    );
+                }
+
+                // 3. Import Pant Measurements
+                const pData = {
+                    height: row['P-Height'] || row['Pant Height'],
+                    waist: row['P-Waist'] || row['Pant Waist'],
+                    seat_pant: row['P-Seat'],
+                    thigh: row['P-Thigh'],
+                    knee_loose: row['P-Knee'],
+                    bottom_loose: row['P-Bottom'],
+                    zip_length: row['P-Zip'],
+                    in_seam: row['P-Inseam'],
+                    pant_type: row['P-Type'],
+                    pocket_type: row['P-Pocket'],
+                    back_pocket: row['P-Back Pkt'],
+                    mobile_pocket: row['P-Mobile'],
+                    watch_pocket: row['P-Watch']
+                };
+
+                const hasPant = Object.values(pData).some(v => v != null && v !== "");
+                if (hasPant) {
+                    await db.run(`INSERT OR REPLACE INTO pant_measurements 
+                        (customer_id, height, waist, seat_pant, thigh, knee_loose, bottom_loose, zip_length, in_seam, pant_type, pocket_type, back_pocket, mobile_pocket, watch_pocket)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                        [customerId, pData.height, pData.waist, pData.seat_pant, pData.thigh, pData.knee_loose, pData.bottom_loose, pData.zip_length, pData.in_seam, pData.pant_type, pData.pocket_type, pData.back_pocket, pData.mobile_pocket, pData.watch_pocket]
+                    );
+                }
+
+                successCount++;
+            }
+
+            showStatus(`Successfully imported ${successCount} customers!`, "✅");
+            // Clear the file input
+            event.target.value = "";
+            
+            // Refresh dashboard stats or lists if needed
+            loadDashboardStats();
+            loadTodayDeliveries();
+            loadTomorrowDeliveries();
+        } catch (err) {
+            console.error("Import error:", err);
+            showStatus("Failed to import Excel. Check format.", "❌");
+        }
+    };
+    reader.readAsArrayBuffer(file);
+};
